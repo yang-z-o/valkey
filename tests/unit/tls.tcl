@@ -176,17 +176,20 @@ start_server {tags {"tls"}} {
 
         test {TLS: Auto-reload detects changes} {
             # Get current certificate files
-            set server_crt [lindex [r config get tls-cert-file] 1]
-            set server_key [lindex [r config get tls-key-file] 1]
+            set orig_server_crt [lindex [r config get tls-cert-file] 1]
+            set orig_server_key [lindex [r config get tls-key-file] 1]
 
-            # Save original certificates
-            set backup_crt "$server_crt.backup"
-            set backup_key "$server_key.backup"
-            file copy -force $server_crt $backup_crt
-            file copy -force $server_key $backup_key
+            # Create temporary certificate files (copies of current ones)
+            set temp_crt "$orig_server_crt.temp"
+            set temp_key "$orig_server_key.temp"
+            file copy -force $orig_server_crt $temp_crt
+            file copy -force $orig_server_key $temp_key
 
             # Ensure cleanup happens even if test fails
             try {
+                # Update server to use temporary certificate files
+                r CONFIG SET tls-cert-file $temp_crt tls-key-file $temp_key
+
                 # Enable auto-reload with 1 second interval for faster testing
                 r CONFIG SET tls-auto-reload-interval 1
 
@@ -195,11 +198,11 @@ start_server {tags {"tls"}} {
                 assert_equal "PONG" [$s PING]
                 $s close
 
-                # Replace with different certificate
+                # Update temporary files with different certificate
                 set valkey_crt [format "%s/tests/tls/valkey.crt" [pwd]]
                 set valkey_key [format "%s/tests/tls/valkey.key" [pwd]]
-                file copy -force $valkey_crt $server_crt
-                file copy -force $valkey_key $server_key
+                file copy -force $valkey_crt $temp_crt
+                file copy -force $valkey_key $temp_key
 
                 # Wait for reload to actually complete by checking server logs
                 wait_for_log_messages 0 {"*TLS materials reloaded successfully*"} 0 100 100
@@ -209,50 +212,60 @@ start_server {tags {"tls"}} {
                 assert_equal "PONG" [$s PING]
                 $s close
 
-                # Restore original certificates
-                file copy -force $backup_crt $server_crt
-                file copy -force $backup_key $server_key
+                # Restore original certificate content to temporary files
+                file copy -force $orig_server_crt $temp_crt
+                file copy -force $orig_server_key $temp_key
 
-                # Clear log position and wait for second reload to complete
+                # Wait for second reload to complete
                 wait_for_log_messages 0 {"*TLS materials reloaded successfully*"} 0 50 100
 
                 # Verify connection still works after restore
                 set s [valkey_client]
                 assert_equal "PONG" [$s PING]
                 $s close
+            } finally {
+                # Restore original configuration
+                r CONFIG SET tls-cert-file $orig_server_crt tls-key-file $orig_server_key
 
                 # Disable auto-reload
                 r CONFIG SET tls-auto-reload-interval 0
-            } finally {
-                # Always clean up backup files
-                file delete -force $backup_crt $backup_key
+
+                # Clean up temporary files
+                file delete -force $temp_crt $temp_key
             }
         }
 
         test {TLS: Auto-reload skips unchanged materials} {
-            # Enable auto-reload with 1 second interval
-            r CONFIG SET tls-auto-reload-interval 1
-            r CONFIG SET loglevel debug
+            # Save original loglevel
+            set orig_loglevel [lindex [r config get loglevel] 1]
 
-            # Wait for at least one reload check cycle
-            wait_for_log_messages 0 {"*materials unchanged*"} 0 50 100
+            try {
+                # Enable auto-reload with 1 second interval
+                r CONFIG SET tls-auto-reload-interval 1
+                r CONFIG SET loglevel debug
 
-            # Disable auto-reload
-            r CONFIG SET tls-auto-reload-interval 0
+                # Wait for at least one reload check cycle
+                wait_for_log_messages 0 {"*materials unchanged*"} 0 50 100
+            } finally {
+                # Disable auto-reload and restore loglevel
+                r CONFIG SET tls-auto-reload-interval 0 loglevel $orig_loglevel
+            }
         }
 
         test {TLS: Auto-reload interval validation} {
-            # Valid intervals
-            r CONFIG SET tls-auto-reload-interval 0
-            r CONFIG SET tls-auto-reload-interval 5
-            r CONFIG SET tls-auto-reload-interval 3600
+            try {
+                # Valid intervals
+                r CONFIG SET tls-auto-reload-interval 0
+                r CONFIG SET tls-auto-reload-interval 5
+                r CONFIG SET tls-auto-reload-interval 3600
 
-            # Invalid intervals should fail
-            catch {r CONFIG SET tls-auto-reload-interval -1} e
-            assert_match {*ERR CONFIG SET failed*} $e
-
-            # Reset to disabled
-            r CONFIG SET tls-auto-reload-interval 0
+                # Invalid intervals should fail
+                catch {r CONFIG SET tls-auto-reload-interval -1} e
+                assert_match {*ERR CONFIG SET failed*} $e
+            } finally {
+                # Reset to disabled
+                r CONFIG SET tls-auto-reload-interval 0
+            }
         }
 
         test {TLS: Auto-reload with CA cert directory} {
@@ -278,11 +291,11 @@ start_server {tags {"tls"}} {
                     set s [valkey_client]
                     assert_equal "PONG" [$s PING]
                     $s close
-
+                } finally {
                     # Disable auto-reload
                     r CONFIG SET tls-auto-reload-interval 0
-                } finally {
-                    # Always clean up test file
+
+                    # Clean up test file
                     file delete -force $test_file
                 }
             }
