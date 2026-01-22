@@ -198,6 +198,11 @@ start_server {tags {"tls"}} {
                 assert_equal "PONG" [$s PING]
                 $s close
 
+                # Wait for at least one auto-reload cycle to ensure filesystem
+                # timestamp will be different when we modify the files
+                # (avoids race condition with 1-second filesystem timestamp granularity)
+                after 1100
+
                 # Update temporary files with different certificate
                 set valkey_crt [format "%s/tests/tls/valkey.crt" [pwd]]
                 set valkey_key [format "%s/tests/tls/valkey.key" [pwd]]
@@ -211,6 +216,10 @@ start_server {tags {"tls"}} {
                 set s [valkey_client]
                 assert_equal "PONG" [$s PING]
                 $s close
+
+                # Wait again to ensure filesystem timestamp will be different
+                # for the second modification
+                after 1100
 
                 # Restore original certificate content to temporary files
                 file copy -force $orig_server_crt $temp_crt
@@ -241,8 +250,8 @@ start_server {tags {"tls"}} {
 
             try {
                 # Enable auto-reload with 1 second interval
-                r CONFIG SET tls-auto-reload-interval 1
                 r CONFIG SET loglevel debug
+                r CONFIG SET tls-auto-reload-interval 1
 
                 # Wait for at least one reload check cycle
                 wait_for_log_messages 0 {"*materials unchanged*"} 0 50 100
